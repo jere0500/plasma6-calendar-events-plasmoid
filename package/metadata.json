@@ -1,0 +1,18 @@
+{
+    "KPlugin": {
+        "Authors": [
+            {
+                "Email": "",
+                "Name": "Calendar Events Widget"
+            }
+        ],
+        "Category": "Date and Time",
+        "Description": "Shows upcoming calendar events from KDE PIM calendars",
+        "Icon": "office-calendar",
+        "Id": "org.kde.plasma.calendarevents",
+        "Name": "Calendar Events",
+        "Version": "1.0"
+    },
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "KPackageStructure": "Plasma/Applet"
+}

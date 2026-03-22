@@ -19,9 +19,8 @@ package/
 ├── contents/
 │   ├── ui/
 │   │   ├── main.qml                # PlasmoidItem entry point
-│   │   ├── FullRepresentation.qml  # Event list popup view
+│   │   ├── FullRepresentation.qml  # Event list popup view (includes inline delegate)
 │   │   ├── CompactRepresentation.qml # Panel icon with badge
-│   │   ├── EventItem.qml           # Single event delegate
 │   │   └── configGeneral.qml       # Configuration UI
 │   └── config/
 │       ├── config.qml              # Config tabs
