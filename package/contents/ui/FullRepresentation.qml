@@ -30,10 +30,21 @@ Item {
         id: displayModel
     }
 
-    onEventsListChanged: rebuildModel()
+    // Defer model rebuild so the ListView finishes its current frame before
+    // we clear + repopulate.  This prevents the crash that occurred when
+    // displayModel.clear() destroyed delegate items whose bindings were
+    // still being evaluated (e.g. tooltip text, time labels).
+    onEventsListChanged: rebuildTimer.restart()
+
+    Timer {
+        id: rebuildTimer
+        interval: 0  // execute on next event-loop tick
+        repeat: false
+        onTriggered: rebuildModel()
+    }
 
     function rebuildModel() {
-        displayModel.clear();
+        var newItems = [];
 
         var lastDateKey = "";
         var now = new Date();
@@ -41,20 +52,27 @@ Item {
         var tomorrow = new Date(today);
         tomorrow.setDate(today.getDate() + 1);
 
-        for (var i = 0; i < eventsList.length; i++) {
-            var ev = eventsList[i];
+        var list = fullRoot.eventsList;
+        if (!list) list = [];
+
+        for (var i = 0; i < list.length; i++) {
+            var ev = list[i];
+            if (!ev) continue;
+
             if (ev.dateKey !== lastDateKey) {
                 var dateObj = ev.dateObj;
                 var headerText;
-                if (dateObj.getTime() === today.getTime()) {
+                if (dateObj && dateObj.getTime() === today.getTime()) {
                     headerText = i18n("Today");
-                } else if (dateObj.getTime() === tomorrow.getTime()) {
+                } else if (dateObj && dateObj.getTime() === tomorrow.getTime()) {
                     headerText = i18n("Tomorrow");
-                } else {
+                } else if (dateObj) {
                     headerText = dateObj.toLocaleDateString(Qt.locale(), Locale.LongFormat);
+                } else {
+                    headerText = "";
                 }
 
-                displayModel.append({
+                newItems.push({
                     isHeader: true,
                     headerText: headerText,
                     itemTitle: "",
@@ -62,22 +80,32 @@ Item {
                     itemStartDateTime: "",
                     itemEndDateTime: "",
                     itemIsAllDay: false,
-                    itemEventColor: "",
-                    itemIndex: i
+                    itemEventColor: ""
                 });
                 lastDateKey = ev.dateKey;
             }
-            displayModel.append({
+
+            var startIso = "";
+            var endIso = "";
+            try { startIso = ev.startDateTime ? ev.startDateTime.toISOString() : ""; } catch(e) { startIso = ""; }
+            try { endIso = ev.endDateTime ? ev.endDateTime.toISOString() : ""; } catch(e) { endIso = ""; }
+
+            newItems.push({
                 isHeader: false,
                 headerText: "",
-                itemTitle: ev.title,
+                itemTitle: ev.title || "",
                 itemDescription: ev.description || "",
-                itemStartDateTime: ev.startDateTime ? ev.startDateTime.toISOString() : "",
-                itemEndDateTime: ev.endDateTime ? ev.endDateTime.toISOString() : "",
-                itemIsAllDay: ev.isAllDay,
-                itemEventColor: ev.eventColor || "",
-                itemIndex: i
+                itemStartDateTime: startIso,
+                itemEndDateTime: endIso,
+                itemIsAllDay: ev.isAllDay || false,
+                itemEventColor: ev.eventColor || ""
             });
+        }
+
+        // Atomic swap: clear and repopulate in one batch.
+        displayModel.clear();
+        for (var j = 0; j < newItems.length; j++) {
+            displayModel.append(newItems[j]);
         }
     }
 
@@ -127,7 +155,7 @@ Item {
         PlasmaExtras.PlaceholderMessage {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            visible: fullRoot.eventsLoaded && fullRoot.eventsList.length === 0
+            visible: fullRoot.eventsLoaded && displayModel.count === 0
             iconName: "office-calendar"
             text: i18n("No upcoming events")
             explanation: i18n("Events from the next %1 days will appear here", fullRoot.daysAhead)
@@ -137,7 +165,7 @@ Item {
         PlasmaComponents.ScrollView {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            visible: fullRoot.eventsLoaded && fullRoot.eventsList.length > 0
+            visible: fullRoot.eventsLoaded && displayModel.count > 0
 
             PlasmaComponents.ScrollBar.horizontal.policy: PlasmaComponents.ScrollBar.AlwaysOff
 
@@ -149,10 +177,18 @@ Item {
                 spacing: 0
                 boundsBehavior: Flickable.StopAtBounds
 
+                // Cache delegates slightly beyond the visible area
+                // so rapid model swaps don't create/destroy while painting.
+                cacheBuffer: Math.max(height, Kirigami.Units.gridUnit * 10)
+
                 delegate: Item {
                     id: delegateItem
                     width: eventListView.width
-                    implicitHeight: delegateItem.isHeader ? headerCol.implicitHeight : eventItemDelegate.implicitHeight
+                    // Guard: if isHeader is undefined (model clearing), fall back to 0
+                    implicitHeight: {
+                        if (typeof delegateItem.isHeader === "undefined") return 0;
+                        return delegateItem.isHeader ? headerCol.implicitHeight : eventItemDelegate.implicitHeight;
+                    }
 
                     required property int index
                     required property bool isHeader
@@ -258,7 +294,7 @@ Item {
                                 Layout.fillWidth: true
                                 spacing: 0
 
-                                // Time or all-day label
+                                // Time label
                                 PlasmaComponents.Label {
                                     Layout.fillWidth: true
                                     visible: !delegateItem.itemIsAllDay && delegateItem.itemStartDateTime !== ""
@@ -268,13 +304,23 @@ Item {
                                     elide: Text.ElideRight
                                     text: {
                                         if (delegateItem.itemIsAllDay || delegateItem.itemStartDateTime === "") return "";
-                                        var fmt = Qt.locale().timeFormat(Locale.ShortFormat);
-                                        var startDt = new Date(delegateItem.itemStartDateTime);
-                                        var endDt = new Date(delegateItem.itemEndDateTime);
-                                        return Qt.formatTime(startDt, fmt) + " \u2013 " + Qt.formatTime(endDt, fmt);
+                                        try {
+                                            var fmt = Qt.locale().timeFormat(Locale.ShortFormat);
+                                            var startDt = new Date(delegateItem.itemStartDateTime);
+                                            var endDt = new Date(delegateItem.itemEndDateTime);
+                                            if (isNaN(startDt.getTime())) return "";
+                                            var result = Qt.formatTime(startDt, fmt);
+                                            if (!isNaN(endDt.getTime())) {
+                                                result += " \u2013 " + Qt.formatTime(endDt, fmt);
+                                            }
+                                            return result;
+                                        } catch (e) {
+                                            return "";
+                                        }
                                     }
                                 }
 
+                                // All-day label
                                 PlasmaComponents.Label {
                                     Layout.fillWidth: true
                                     visible: delegateItem.itemIsAllDay
@@ -296,19 +342,30 @@ Item {
                             }
                         }
 
-                        // Tooltip
+                        // Tooltip with safe accessors
                         PlasmaComponents.ToolTip.delay: Kirigami.Units.toolTipDelay
-                        PlasmaComponents.ToolTip.visible: eventMouse.containsMouse
+                        PlasmaComponents.ToolTip.visible: eventMouse.containsMouse && delegateItem.itemTitle !== ""
                         PlasmaComponents.ToolTip.text: {
+                            if (!delegateItem.itemTitle) return "";
                             var lines = [];
                             lines.push(delegateItem.itemTitle);
                             if (delegateItem.itemIsAllDay) {
                                 lines.push(i18n("All day"));
                             } else if (delegateItem.itemStartDateTime !== "") {
-                                var fmt = Qt.locale().timeFormat(Locale.ShortFormat);
-                                var s = new Date(delegateItem.itemStartDateTime);
-                                var e = new Date(delegateItem.itemEndDateTime);
-                                lines.push(Qt.formatTime(s, fmt) + " \u2013 " + Qt.formatTime(e, fmt));
+                                try {
+                                    var fmt = Qt.locale().timeFormat(Locale.ShortFormat);
+                                    var s = new Date(delegateItem.itemStartDateTime);
+                                    var e = new Date(delegateItem.itemEndDateTime);
+                                    if (!isNaN(s.getTime())) {
+                                        var timeStr = Qt.formatTime(s, fmt);
+                                        if (!isNaN(e.getTime())) {
+                                            timeStr += " \u2013 " + Qt.formatTime(e, fmt);
+                                        }
+                                        lines.push(timeStr);
+                                    }
+                                } catch (err) {
+                                    // Silently skip time display on error
+                                }
                             }
                             if (delegateItem.itemDescription) {
                                 lines.push(delegateItem.itemDescription);
